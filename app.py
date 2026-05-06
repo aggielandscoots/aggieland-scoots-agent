@@ -2,6 +2,9 @@ from flask import Flask, request, Response
 from openai import OpenAI
 import os
 import json
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 app = Flask(__name__)
 client = OpenAI(
@@ -9,69 +12,99 @@ client = OpenAI(
     base_url="https://api.x.ai/v1"
 )
 
-# ====================== RAG KNOWLEDGE BASE ======================
+# ====================== FULL WEBSITE RAG KNOWLEDGE BASE ======================
 KNOWLEDGE_BASE = """
-Aggieland Scoots - 1600 Texas Ave S, College Station, TX 77840
+Aggieland Scoots (Scoots) - 1600 Texas Ave S, College Station, TX 77840
 Phone: (979) 446-0900 | Email: info@aggielandscoots.com
-Hours: Mon–Sat 10am–6pm | Closed Sunday
-Aggie Owned & Operated.
+Hours: Mon–Sat 10am–6pm | Aggie Owned & Operated since 2014.
 
-We specialize in: Mopeds, Motor Scooters, Motorcycles, eScooters, eBikes (new & pre-owned).
+SERVICES: Sales, full service/repair, rentals, test rides, learn-to-ride tutorials, financing, delivery (local + nationwide shipping).
 
-Popular Brands: Genuine Scooter Co, Kymco, Lance, SYM, Honda, NIU, Wolf, Buddy, Lectric, etc.
+BRANDS: Genuine, Kymco, Lance, SYM, Honda, NIU, Wolf, Buddy, Lectric, GoTrax, Chicago Scooter Co, Moto Morini, Royal Alloy, etc.
 
-Key Benefits for Customers:
-- Test rides available
-- Learn-to-ride help included
-- Financing options
-- Delivery available
-- Full service & repair shop
-- Warranty service
+KEY UPSell POINTS (use these when customer mentions eScooter or eBike):
+- Mopeds are more comfortable for longer rides.
+- Mopeds have much longer range (75–140+ MPG vs 12–60 mile battery range).
+- Mopeds are safer — they ride in the street where drivers are looking for traffic, while eScooters/eBikes cross driveways and intersections where people aren’t expecting them.
+- Scoots is well known for excellent eScooter and eBike repairs (flat tires, error codes, brakes, batteries, etc.), so we can service anything they already own.
 
-Texas Moped Law: Under 50cc needs only regular Class C driver's license. No motorcycle endorsement needed.
+FAQ HIGHLIGHTS:
+- Texas 50cc moped: Only needs regular Class C driver’s license.
+- Helmet not required if 21+ with health insurance (but always recommended).
+- Insurance usually ~$80/year liability.
+- We repair almost every brand of eScooter and eBike (Ancheer, Apollo, Lectric, NIU, GoTrax, etc.).
+- Oil change every 6 months or 1,000 miles.
+- Test rides and learn-to-ride tutorial included.
+
+CURRENT INVENTORY EXAMPLES (prices often on sale):
+- 2024 Buddy 50: $2,349 (45+ MPH, 100 MPG)
+- 2024 Go 50: $1,235 (30 MPH, 100+ MPG)
+- 2024 Rugby II 150: $1,799 (50+ MPH, 75+ MPG)
+- 2024 X-Cape 650: $6,999 (105 MPH)
+- Many eScooters from $709, eBikes, and motorcycles available.
 """
 
-# ====================== TOOLS ======================
+SYSTEM_PROMPT = """You are the official Aggieland Scoots AI Sales Agent.
+Use the full knowledge base above to answer accurately.
+
+CORE GOALS:
+1. Be friendly, helpful, and Aggie-proud.
+2. Qualify the customer (commute distance, budget, gas vs electric, daily miles).
+3. When they show interest in eScooters or eBikes, naturally upsell moped/motorcycle using the exact points: more comfortable, much longer range, safer on streets, and remind them we expertly repair eScooters/eBikes if they keep theirs.
+4. Always try to capture a lead (name, email, phone) and book a test ride or quote.
+
+When you have name + email + phone + interest → immediately call capture_lead tool."""
+
 TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_inventory",
-            "description": "Get current inventory with prices and specs",
-            "parameters": {"type": "object", "properties": {}}
+    {"type": "function", "function": {"name": "get_inventory", "description": "Get current inventory", "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "capture_lead",
+        "description": "Capture lead and SEND REAL EMAIL to dealership",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "email": {"type": "string"},
+                "phone": {"type": "string"},
+                "interest": {"type": "string"},
+                "recommended_model": {"type": "string"},
+                "notes": {"type": "string"}
+            },
+            "required": ["name", "email", "phone"]
         }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "capture_lead",
-            "description": "Capture a qualified lead",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "email": {"type": "string"},
-                    "phone": {"type": "string"},
-                    "interest": {"type": "string"},
-                    "recommended_model": {"type": "string"},
-                    "notes": {"type": "string"}
-                },
-                "required": ["name", "email", "phone"]
-            }
-        }
-    }
+    }}
 ]
 
-SYSTEM_PROMPT = """You are the official Aggieland Scoots AI Sales Agent.
-Use the knowledge base below to answer accurately.
+def send_lead_email(lead_data):
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = os.getenv("EMAIL_USER")
+        msg['To'] = "info@aggielandscoots.com"
+        msg['Subject'] = f"NEW LEAD from AI Agent: {lead_data.get('name')} - {lead_data.get('interest','')}"
 
-KNOWLEDGE BASE:
-""" + KNOWLEDGE_BASE + """
+        body = f"""
+New lead from Aggieland Scoots AI Agent:
 
-Be friendly, helpful, Aggie-proud, and never pushy.
-Ask qualifying questions (daily commute distance, budget, gas vs electric preference).
-Recommend specific models when possible.
-Use tools when needed."""
+Name: {lead_data.get('name')}
+Email: {lead_data.get('email')}
+Phone: {lead_data.get('phone')}
+Interest: {lead_data.get('interest','N/A')}
+Recommended Model: {lead_data.get('recommended_model','N/A')}
+Notes: {lead_data.get('notes','N/A')}
+
+Captured at {os.getenv('RENDER_EXTERNAL_URL', 'Website')}
+"""
+        msg.attach(MIMEText(body, 'plain'))
+
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(os.getenv("EMAIL_USER"), os.getenv("EMAIL_PASS"))
+        server.send_message(msg)
+        server.quit()
+        return True
+    except Exception as e:
+        print("Email failed:", e)
+        return False
 
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -87,8 +120,18 @@ def chat():
             stream=True
         )
         for chunk in stream:
-            if chunk.choices[0].delta.content:
-                yield f"data: {chunk.choices[0].delta.content}\n\n"
+            delta = chunk.choices[0].delta
+            if delta.content:
+                yield f"data: {delta.content}\n\n"
+            elif delta.tool_calls:
+                for tool_call in delta.tool_calls:
+                    if tool_call.function.name == "capture_lead":
+                        args = json.loads(tool_call.function.arguments)
+                        success = send_lead_email(args)
+                        if success:
+                            yield f"data: Perfect! I’ve sent your info to the team — they’ll reach out soon to schedule a test ride.\n\n"
+                        else:
+                            yield f"data: Thanks! I’ve captured your info.\n\n"
 
     return Response(generate(), mimetype="text/event-stream")
 
