@@ -1,8 +1,15 @@
 from flask import Flask, request, Response, jsonify
 from flask_cors import CORS
+from openai import OpenAI
+import os
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})   # Allow all websites
+CORS(app, resources={r"/*": {"origins": "*"}})   # Allow your website
+
+client = OpenAI(
+    api_key=os.getenv("XAI_API_KEY"),
+    base_url="https://api.x.ai/v1"
+)
 
 @app.route("/")
 def home():
@@ -12,18 +19,22 @@ def home():
 def chat():
     try:
         data = request.get_json()
-        user_message = data.get("messages", [{}])[-1].get("content", "")
-
-        # Simple echo response for testing
-        response_text = f"Thank you for your message: '{user_message}'. I'm your Aggieland Scoots AI Agent 🛵 How can I help you today?"
+        messages = [{"role": "system", "content": "You are helpful Aggieland Scoots AI Agent."}] + data.get("messages", [])
 
         def generate():
-            yield f"data: {response_text}\n\n"
+            stream = client.chat.completions.create(
+                model="grok-4.3",
+                messages=messages,
+                stream=True
+            )
+            for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    yield f"data: {chunk.choices[0].delta.content}\n\n"
 
         return Response(generate(), mimetype="text/event-stream")
-
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print("Error:", e)
+        return jsonify({"error": "Internal error"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
